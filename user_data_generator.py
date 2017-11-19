@@ -3,8 +3,8 @@
 from random import randint
 try:
     with open('user.csv', 'w') as f:
-        for i in range(10000):
-            f.write('{},{}\n'.format(i, randint(3000, 80000)))
+        for i in range(100):
+            f.write('{},{}\n'.format(i, randint(3000, 7000)))
 except:
     print('generation failed')
     exit(1)

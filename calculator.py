@@ -4,6 +4,7 @@ import sys, os
 from multiprocessing import Process, Value, Queue, Lock
 import time
 
+
 # classes
 class Config(object):
     default_keys = ['JiShuL', 'JiShuH', 'YangLao', 'YiLiao', 'ShiYe', 'GongShang', 'ShengYu', 'GongJiJin']
@@ -31,7 +32,7 @@ class Config(object):
             self.__error()
         if self.JiShuL > self.JiShuH:
             self.__error()
-        # print(self.rates.keys)
+            # print(self.rates.keys)
 
     def cal_insure_amount(self, salary):
         insure_sum = 0
@@ -92,7 +93,7 @@ class UserData(object):
             tax_result = 0
         return tax_result
 
-    def read_data(self, is_error, cal_lock, is_read_fin, user_q ):
+    def read_data(self, is_error, cal_lock, user_q):
         # print('read:{}'.format(os.getpid()))
         try:
             with open(self.data_file) as f:
@@ -102,27 +103,25 @@ class UserData(object):
                     line = l.split(',')
                     with cal_lock:
                         user_q.put([int(line[0]), int(line[1])])
-                        # print('put: ', line)
-                time.sleep(0.1)
                 with cal_lock:
-                    is_read_fin.value = 1
+                    user_q.put(['READ', 'FIN'])
         except:
-            # print('read error')
             with cal_lock:
                 is_error.value = 1
             return
 
-    def cal_data(self, is_error, cal_lock, is_read_fin, is_cal_fin, user_q, out_q):
+    def cal_data(self, is_error, cal_lock, user_q, out_q):
         # print('cal:{}'.format(os.getpid()))
         try:
             while 1:
-                # print(is_error.value, is_read_fin.value, user_q.empty())
-                with cal_lock:
-                    if is_error.value == 1 or (is_read_fin.value == 1 and user_q.empty()):
-                        break
+
+                if is_error.value == 1:
+                    return
                 if not user_q.empty():
                     with cal_lock:
                         user_num, user_salary = user_q.get()
+                    if user_num == 'READ' and user_salary == 'FIN':
+                        break
                     # print('cal gets: ', user_num, user_salary)
                     user_insure = self.config.cal_insure_amount(user_salary)
                     user_income_tax = self.cal_income_tax(user_salary)
@@ -130,38 +129,35 @@ class UserData(object):
                     output_list = [user_num, user_salary, user_insure, user_income_tax, user_actual_income]
                     with cal_lock:
                         out_q.put(output_list)
-            if is_error.value == 1:
-                return
-            time.sleep(0.1)
             with cal_lock:
-                is_cal_fin.value = 1
+                out_q.put(['CAL', 'FIN'])
+                # is_cal_fin.value = 1
         except:
             with cal_lock:
                 is_error.value = 1
             return
 
-    def write_data(self, is_error, cal_lock, is_read_fin, is_cal_fin, out_q):
+    def write_data(self, is_error, cal_lock, out_q):
+        # print('write:{}'.format(os.getpid()))
         try:
             f = open(self.dump_file, 'w')
             while 1:
-                with cal_lock:
-                    if is_error.value == 1 or (is_read_fin.value == 1 and is_cal_fin.value == 1 and out_q.empty()):
-                        # print('write fin, {}, {}, {}'.format(is_error.value, is_read_fin.value, is_cal_fin.value))
-                        # print('out_q empty:{}'.format(out_q.empty()))
-                        break
+
+                if is_error.value == 1:
+                    f.close()
+                    return
                 if not out_q.empty():
                     with cal_lock:
                         output_data = out_q.get()
-                        # print('write gets:', output_data )
+                    if output_data[0] == 'CAL' and output_data[1] == 'FIN':
+                        f.close()
+                        break
                     user_info = '{0},{1},{2},{3},{4}\n'.format(str(output_data[0]),
                                                                str(output_data[1]),
                                                                format(output_data[2], ".2f"),
                                                                format(output_data[3], ".2f"),
                                                                format(output_data[4], ".2f"))
                     f.write(user_info)
-            if is_error.value == 1:
-                f.close()
-                return
         except:
             print('write error')
             f.close()
@@ -176,14 +172,24 @@ def main(argv):
         exit(0)
     else:
         # ./calculator.py -c /home/shiyanlou/test.cfg -d /home/shiyanlou/user.csv -o /tmp/gongzi.csv
+
         arg_list = argv[1:]
-        if arg_list[0] != '-c' or arg_list[2] != '-d' or arg_list[4] != '-o':
+
+        cfg_file = None
+        user_file = None
+        output_file = None
+
+        for i in range(len(arg_list)):
+            if arg_list[i] == '-c':
+                cfg_file = arg_list[i + 1]
+            elif arg_list[i] == '-d':
+                user_file = arg_list[i + 1]
+            elif arg_list[i] == '-o':
+                output_file = arg_list[i + 1]
+
+        if cfg_file is None or user_file is None or output_file is None:
             print('Parameter Error')
             exit(0)
-
-        cfg_file = arg_list[1]
-        user_file = arg_list[3]
-        output_file = arg_list[5]
 
         conf = Config(cfg_file)
         users = UserData(conf, user_file, output_file)
@@ -191,10 +197,7 @@ def main(argv):
         # Multiprocessing
         # 错误flag，置位后所有进程停止工作，退出程序
         is_error = Value('i', 0)
-        #
-        is_read_fin = Value('i', 0)
-        is_cal_fin = Value('i', 0)
-        # is_write_fin = Value('i', 0)
+
         # 从用户信息中读取，即将计算个税的队列
         user_q = Queue()
 
@@ -204,9 +207,9 @@ def main(argv):
         # Lock
         cal_lock = Lock()
 
-        p_read = Process(target=users.read_data, args=(is_error, cal_lock, is_read_fin, user_q, ))
-        p_cal = Process(target=users.cal_data, args=(is_error, cal_lock, is_read_fin, is_cal_fin, user_q, out_q, ))
-        p_write = Process(target=users.write_data, args=(is_error, cal_lock, is_read_fin, is_cal_fin, out_q, ))
+        p_read = Process(target=users.read_data, args=(is_error, cal_lock, user_q,))
+        p_cal = Process(target=users.cal_data, args=(is_error, cal_lock, user_q, out_q,))
+        p_write = Process(target=users.write_data, args=(is_error, cal_lock, out_q,))
 
         p_read.start()
         p_cal.start()
@@ -223,8 +226,4 @@ def main(argv):
 
 if __name__ == '__main__':
     main(sys.argv)
-    # con = Config('test.cfg')
-    # print(con.cal_insure_amount(4500))
-    # users = UserData('user.csv', con)
-    # users.gen_paycheck()
     exit(0)
