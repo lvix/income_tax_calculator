@@ -1,20 +1,7 @@
 #!/usr/bin/env python3 
 
-import sys
-from multiprocessing import Process, Value, Queue
-
-# Multiprocessing
-# 错误flag，置位后所有进程停止工作，退出程序
-is_error = Value('i', 0)
-#
-is_reading_finished = Value('i', 0)
-is_cal_finished = Value('i', 0)
-is_writing_finished = Value('i', 0)
-# 从用户信息中读取，即将计算个税的队列
-q_user_data = Queue()
-
-# 即将写入到文件的队列
-q_output_data = Queue()
+import sys, os
+from multiprocessing import Process, Value, Queue, Lock
 
 
 # classes
@@ -82,9 +69,9 @@ class UserData(object):
 
     @staticmethod
     def __error():
+        pass
         # print('Parameter Error')
         # exit(1)
-        is_error.value = 1
 
     def cal_income_tax(self, salary):
         # 计算社保金额
@@ -105,55 +92,73 @@ class UserData(object):
             tax_result = 0
         return tax_result
 
-    def read_data(self):
+    def read_data(self, is_error, cal_lock, is_read_fin, user_q ):
+        # print('read:{}'.format(os.getpid()))
         try:
             with open(self.data_file) as f:
                 for l in f:
                     if is_error.value == 1:
                         return
                     line = l.split(',')
-                    # self.users[int(line[0])] = int(line[1])
-                    q_user_data.put([int(line[0]), int(line[1])])
-                is_reading_finished.value = 1
+                    with cal_lock:
+                        user_q.put([int(line[0]), int(line[1])])
+                        # print('put: ', line)
+                with cal_lock:
+                    is_read_fin.value = 1
         except:
             # print('read error')
-            self.__error()
+            with cal_lock:
+                is_error.value = 1
             return
 
-    def cal_data(self):
+    def cal_data(self, is_error, cal_lock, is_read_fin, is_cal_fin, user_q, out_q):
+        # print('cal:{}'.format(os.getpid()))
         try:
-            while is_error.value == 0 and not (is_reading_finished.value == 1 and q_user_data.empty()):
-                if not q_user_data.empty():
-                    user_num, user_salary = q_user_data.get()
-                    user_insure = self.config.cal_insure_amount(user_salary)
-                    user_income_tax = self.cal_income_tax(user_salary)
-                    user_actual_income = user_salary - user_insure - user_income_tax
-                    output_list = [user_num, user_salary, user_insure, user_income_tax, user_actual_income]
-                    q_output_data.put(output_list)
+            while 1:
+                with cal_lock:
+                    # print(is_error.value, is_read_fin.value, user_q.empty())
+                    if is_error.value == 1 or (is_read_fin.value == 1 and user_q.empty()):
+                        break
+                    if not user_q.empty():
+                        user_num, user_salary = user_q.get()
+                        # print('get: ', user_num, user_salary)
+                        user_insure = self.config.cal_insure_amount(user_salary)
+                        user_income_tax = self.cal_income_tax(user_salary)
+                        user_actual_income = user_salary - user_insure - user_income_tax
+                        output_list = [user_num, user_salary, user_insure, user_income_tax, user_actual_income]
+                        out_q.put(output_list)
             if is_error.value == 1:
                 return
-            is_cal_finished.value = 1
+            with cal_lock:
+                is_cal_fin.value = 1
         except:
-            # print('cal_error')
-            self.__error()
+            with cal_lock:
+                is_error.value = 1
             return
 
-    def write_data(self):
+    def write_data(self, is_error, cal_lock, is_read_fin, is_cal_fin, out_q):
         try:
             f = open(self.dump_file, 'w')
-            while is_error.value == 0 and not(is_reading_finished.value == 1 and is_cal_finished.value == 1 and q_output_data.empty()):
-                if not q_output_data.empty():
-                    output_data = q_output_data.get()
-                    user_info = '{0},{1},{2},{3},{4}\n'.format(str(output_data[0]), str(output_data[1]), format(output_data[2], ".2f"),
-                                                         format(output_data[3], ".2f"), format(output_data[4], ".2f"))
-                    f.write(user_info)
+            while 1:
+                with cal_lock:
+                    if is_error.value == 1 or (is_read_fin.value == 1 and is_cal_fin.value == 1 and out_q.empty()):
+                        break
+                    if not out_q.empty():
+                        output_data = out_q.get()
+                        user_info = '{0},{1},{2},{3},{4}\n'.format(str(output_data[0]),
+                                                                   str(output_data[1]),
+                                                                   format(output_data[2], ".2f"),
+                                                                   format(output_data[3], ".2f"),
+                                                                   format(output_data[4], ".2f"))
+                        f.write(user_info)
             if is_error.value == 1:
                 f.close()
                 return
         except:
             # print('write error')
             f.close()
-            self.__error()
+            with cal_lock:
+                is_error.value = 1
             return
 
 
@@ -175,9 +180,25 @@ def main(argv):
         conf = Config(cfg_file)
         users = UserData(conf, user_file, output_file)
 
-        p_read = Process(target=users.read_data())
-        p_cal = Process(target=users.cal_data())
-        p_write = Process(target=users.write_data())
+        # Multiprocessing
+        # 错误flag，置位后所有进程停止工作，退出程序
+        is_error = Value('i', 0)
+        #
+        is_read_fin = Value('i', 0)
+        is_cal_fin = Value('i', 0)
+        # is_write_fin = Value('i', 0)
+        # 从用户信息中读取，即将计算个税的队列
+        user_q = Queue()
+
+        # 即将写入到文件的队列
+        out_q = Queue()
+
+        # Lock
+        cal_lock = Lock()
+
+        p_read = Process(target=users.read_data, args=(is_error, cal_lock, is_read_fin, user_q, ))
+        p_cal = Process(target=users.cal_data, args=(is_error, cal_lock, is_read_fin, is_cal_fin, user_q, out_q, ))
+        p_write = Process(target=users.write_data, args=(is_error, cal_lock, is_read_fin, is_cal_fin, out_q, ))
 
         p_read.start()
         p_cal.start()
