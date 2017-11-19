@@ -1,18 +1,20 @@
 #!/usr/bin/env python3 
 
 import sys
+from multiprocessing import Process, Value, Queue
 
-# constants
+# Multiprocessing
+# 错误flag，置位后所有进程停止工作，退出程序
+is_error = Value('i', 0)
+#
+is_reading_finished = Value('i', 0)
+is_cal_finished = Value('i', 0)
+is_writing_finished = Value('i', 0)
+# 从用户信息中读取，即将计算个税的队列
+q_user_data = Queue()
 
-
-insure_rates = {
-    'pension': 0.08,
-    'medic': 0.02,
-    'unemploy': 0.005,
-    'workinj': 0,
-    'reprod': 0,
-    'accfunds': 0.06
-}
+# 即将写入到文件的队列
+q_output_data = Queue()
 
 
 # classes
@@ -63,32 +65,31 @@ class Config(object):
 
 
 class UserData(object):
+    """
+    按配置信息，计算员工的社保金额、个人所得税、实际收入等信息，
+    并输出到指定的文件中
+    """
     tax_rate = [0.03, 0.10, 0.20, 0.25, 0.30, 0.35, 0.45]
     tax_threshold = 3500
     fixed_value = [0, 105, 555, 1005, 2755, 5505, 13505]
     tax_range = [0, 1500, 4500, 9000, 35000, 55000, 80000]
 
-    def __init__(self, file_path, config):
-        self.users = {}
+    def __init__(self, config, data_file, dump_file):
+        # self.users = {}
         self.config = config
-        try:
-            with open(file_path) as f:
-                for l in f:
-                    line = l.split(',')
-                    self.users[int(line[0])] = int(line[1])
-        except:
-            self.__error()
-        # print(self.users)
+        self.data_file = data_file
+        self.dump_file = dump_file
 
     @staticmethod
     def __error():
-        print('Parameter Error')
-        exit(1)
+        # print('Parameter Error')
+        # exit(1)
+        is_error.value = 1
 
     def cal_income_tax(self, salary):
-        # calculate insurance amount
+        # 计算社保金额
         insurance = self.config.cal_insure_amount(salary)
-        # figure out the amount that should be taxed
+        # 计算应纳税金额
         tax_amount = salary - insurance - self.tax_threshold
         if tax_amount > self.tax_range[-1]:
             level = 6
@@ -104,21 +105,56 @@ class UserData(object):
             tax_result = 0
         return tax_result
 
-    def gen_paycheck(self, dump_file):
+    def read_data(self):
         try:
-            f = open(dump_file, 'w')
-            for user_num, user_salary in self.users.items():
-                user_insure = self.config.cal_insure_amount(user_salary)
-                user_income_tax = self.cal_income_tax(user_salary)
-                user_actual_income = user_salary - user_insure - user_income_tax
-                # 工号,税前工资,社保金额,个税金额,税后工资
-                user_info = '{0},{1},{2},{3},{4}'.format(str(user_num), str(user_salary), format(user_insure, ".2f"),
-                                                         format(user_income_tax, ".2f"), format(user_actual_income, ".2f"))
-                f.write('{}\n'.format(user_info))
-            f.close()
+            with open(self.data_file) as f:
+                for l in f:
+                    if is_error.value == 1:
+                        return
+                    line = l.split(',')
+                    # self.users[int(line[0])] = int(line[1])
+                    q_user_data.put([int(line[0]), int(line[1])])
+                is_reading_finished.value = 1
         except:
+            print('read error')
+            self.__error()
+            return
+
+    def cal_data(self):
+        try:
+            while is_error.value == 0 and not (is_reading_finished.value == 1 and q_user_data.empty()):
+                if not q_user_data.empty():
+                    user_num, user_salary = q_user_data.get()
+                    user_insure = self.config.cal_insure_amount(user_salary)
+                    user_income_tax = self.cal_income_tax(user_salary)
+                    user_actual_income = user_salary - user_insure - user_income_tax
+                    output_list = [user_num, user_salary, user_insure, user_income_tax, user_actual_income]
+                    q_output_data.put(output_list)
+            if is_error.value == 1:
+                return
+            is_cal_finished.value = 1
+        except:
+            print('cal_error')
+            self.__error()
+            return
+
+    def write_data(self):
+        try:
+            f = open(self.dump_file, 'w')
+            while is_error.value == 0 and not(is_reading_finished.value == 1 and is_cal_finished.value == 1 and q_output_data.empty()):
+                if not q_output_data.empty():
+                    output_data = q_output_data.get()
+                    user_info = '{0},{1},{2},{3},{4}\n'.format(str(output_data[0]), str(output_data[1]), format(output_data[2], ".2f"),
+                                                         format(output_data[3], ".2f"), format(output_data[4], ".2f"))
+                    f.write(user_info)
+            if is_error.value == 1:
+                f.close()
+                return
+        except:
+            print('write error')
             f.close()
             self.__error()
+            return
 
 
 def main(argv):
@@ -137,8 +173,23 @@ def main(argv):
         output_file = arg_list[5]
 
         conf = Config(cfg_file)
-        users = UserData(user_file, conf)
-        users.gen_paycheck(output_file)
+        users = UserData(conf, user_file, output_file)
+
+        p_read = Process(target=users.read_data())
+        p_cal = Process(target=users.cal_data())
+        p_write = Process(target=users.write_data())
+
+        p_read.start()
+        p_cal.start()
+        p_write.start()
+
+        p_read.join()
+        p_cal.join()
+        p_write.join()
+
+        if is_error.value == 1:
+            print('Parameter Error')
+            exit(1)
 
 
 if __name__ == '__main__':
