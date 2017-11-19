@@ -116,7 +116,7 @@ class UserData(object):
                     q_user_data.put([int(line[0]), int(line[1])])
                 is_reading_finished.value = 1
         except:
-            print('read error')
+            # print('read error')
             self.__error()
             return
 
@@ -134,7 +134,7 @@ class UserData(object):
                 return
             is_cal_finished.value = 1
         except:
-            print('cal_error')
+            # print('cal_error')
             self.__error()
             return
 
@@ -151,7 +151,7 @@ class UserData(object):
                 f.close()
                 return
         except:
-            print('write error')
+            # print('write error')
             f.close()
             self.__error()
             return
