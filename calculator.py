@@ -115,17 +115,17 @@ class UserData(object):
         # print('cal:{}'.format(os.getpid()))
         try:
             while 1:
-                with cal_lock:
-                    # print(is_error.value, is_read_fin.value, user_q.empty())
-                    if is_error.value == 1 or (is_read_fin.value == 1 and user_q.empty()):
-                        break
-                    if not user_q.empty():
-                        user_num, user_salary = user_q.get()
-                        # print('get: ', user_num, user_salary)
-                        user_insure = self.config.cal_insure_amount(user_salary)
-                        user_income_tax = self.cal_income_tax(user_salary)
-                        user_actual_income = user_salary - user_insure - user_income_tax
-                        output_list = [user_num, user_salary, user_insure, user_income_tax, user_actual_income]
+                # print(is_error.value, is_read_fin.value, user_q.empty())
+                if is_error.value == 1 or (is_read_fin.value == 1 and user_q.empty()):
+                    break
+                if not user_q.empty():
+                    user_num, user_salary = user_q.get()
+                    # print('get: ', user_num, user_salary)
+                    user_insure = self.config.cal_insure_amount(user_salary)
+                    user_income_tax = self.cal_income_tax(user_salary)
+                    user_actual_income = user_salary - user_insure - user_income_tax
+                    output_list = [user_num, user_salary, user_insure, user_income_tax, user_actual_income]
+                    with cal_lock:
                         out_q.put(output_list)
             if is_error.value == 1:
                 return
@@ -140,17 +140,16 @@ class UserData(object):
         try:
             f = open(self.dump_file, 'w')
             while 1:
-                with cal_lock:
-                    if is_error.value == 1 or (is_read_fin.value == 1 and is_cal_fin.value == 1 and out_q.empty()):
-                        break
-                    if not out_q.empty():
-                        output_data = out_q.get()
-                        user_info = '{0},{1},{2},{3},{4}\n'.format(str(output_data[0]),
-                                                                   str(output_data[1]),
-                                                                   format(output_data[2], ".2f"),
-                                                                   format(output_data[3], ".2f"),
-                                                                   format(output_data[4], ".2f"))
-                        f.write(user_info)
+                if is_error.value == 1 or (is_read_fin.value == 1 and is_cal_fin.value == 1 and out_q.empty()):
+                    break
+                if not out_q.empty():
+                    output_data = out_q.get()
+                    user_info = '{0},{1},{2},{3},{4}\n'.format(str(output_data[0]),
+                                                               str(output_data[1]),
+                                                               format(output_data[2], ".2f"),
+                                                               format(output_data[3], ".2f"),
+                                                               format(output_data[4], ".2f"))
+                    f.write(user_info)
             if is_error.value == 1:
                 f.close()
                 return
