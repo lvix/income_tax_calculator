@@ -2,7 +2,7 @@
 
 import sys, os
 from multiprocessing import Process, Value, Queue, Lock
-
+import time
 
 # classes
 class Config(object):
@@ -103,6 +103,7 @@ class UserData(object):
                     with cal_lock:
                         user_q.put([int(line[0]), int(line[1])])
                         # print('put: ', line)
+                time.sleep(0.1)
                 with cal_lock:
                     is_read_fin.value = 1
         except:
@@ -116,11 +117,13 @@ class UserData(object):
         try:
             while 1:
                 # print(is_error.value, is_read_fin.value, user_q.empty())
-                if is_error.value == 1 or (is_read_fin.value == 1 and user_q.empty()):
-                    break
+                with cal_lock:
+                    if is_error.value == 1 or (is_read_fin.value == 1 and user_q.empty()):
+                        break
                 if not user_q.empty():
-                    user_num, user_salary = user_q.get()
-                    # print('get: ', user_num, user_salary)
+                    with cal_lock:
+                        user_num, user_salary = user_q.get()
+                    # print('cal gets: ', user_num, user_salary)
                     user_insure = self.config.cal_insure_amount(user_salary)
                     user_income_tax = self.cal_income_tax(user_salary)
                     user_actual_income = user_salary - user_insure - user_income_tax
@@ -129,6 +132,7 @@ class UserData(object):
                         out_q.put(output_list)
             if is_error.value == 1:
                 return
+            time.sleep(0.1)
             with cal_lock:
                 is_cal_fin.value = 1
         except:
@@ -140,10 +144,15 @@ class UserData(object):
         try:
             f = open(self.dump_file, 'w')
             while 1:
-                if is_error.value == 1 or (is_read_fin.value == 1 and is_cal_fin.value == 1 and out_q.empty()):
-                    break
+                with cal_lock:
+                    if is_error.value == 1 or (is_read_fin.value == 1 and is_cal_fin.value == 1 and out_q.empty()):
+                        # print('write fin, {}, {}, {}'.format(is_error.value, is_read_fin.value, is_cal_fin.value))
+                        # print('out_q empty:{}'.format(out_q.empty()))
+                        break
                 if not out_q.empty():
-                    output_data = out_q.get()
+                    with cal_lock:
+                        output_data = out_q.get()
+                        # print('write gets:', output_data )
                     user_info = '{0},{1},{2},{3},{4}\n'.format(str(output_data[0]),
                                                                str(output_data[1]),
                                                                format(output_data[2], ".2f"),
@@ -154,7 +163,7 @@ class UserData(object):
                 f.close()
                 return
         except:
-            # print('write error')
+            print('write error')
             f.close()
             with cal_lock:
                 is_error.value = 1
