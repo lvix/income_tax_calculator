@@ -1,35 +1,38 @@
 #!/usr/bin/env python3 
 
-import sys, os
+import sys
+import getopt
 from multiprocessing import Process, Value, Queue, Lock
-import time
+from datetime import datetime
+import configparser
 
 
 # classes
 class Config(object):
+    """
+    根据Parser 生成对应的社保信息，
+    并计算社保金额
+    """
     default_keys = ['JiShuL', 'JiShuH', 'YangLao', 'YiLiao', 'ShiYe', 'GongShang', 'ShengYu', 'GongJiJin']
 
-    def __init__(self, file_path):
+    def __init__(self, config_sec):
         self.rates = {}
         try:
-            cfg = open(file_path)
-            for l in cfg:
-                line = l.split('=')
-                self.rates[line[0].strip()] = float(line[1])
-            cfg.close()
+            for k in config_sec:
+                self.rates[k] = float(config_sec[k])
+
         except:
             self.__error()
 
-        # print(self.rates.keys())
-        for key in self.rates.keys():
-            if key not in self.default_keys:
+        for key in self.default_keys:
+            if key.lower() not in self.rates.keys():
                 self.__error()
-
         try:
-            self.JiShuL = self.rates.pop('JiShuL')
-            self.JiShuH = self.rates.pop('JiShuH')
+            self.JiShuL = self.rates.pop('jishul')
+            self.JiShuH = self.rates.pop('jishuh')
         except:
             self.__error()
+
         if self.JiShuL > self.JiShuH:
             self.__error()
             # print(self.rates.keys)
@@ -101,10 +104,10 @@ class UserData(object):
                     if is_error.value == 1:
                         return
                     line = l.split(',')
-                    with cal_lock:
-                        user_q.put([int(line[0]), int(line[1])])
-                with cal_lock:
-                    user_q.put(['READ', 'FIN'])
+                    # with cal_lock:
+                    user_q.put([int(line[0]), int(line[1])])
+                # with cal_lock:
+                user_q.put(['READ', 'FIN'])
         except:
             with cal_lock:
                 is_error.value = 1
@@ -118,8 +121,8 @@ class UserData(object):
                 if is_error.value == 1:
                     return
                 if not user_q.empty():
-                    with cal_lock:
-                        user_num, user_salary = user_q.get()
+                    # with cal_lock:
+                    user_num, user_salary = user_q.get()
                     if user_num == 'READ' and user_salary == 'FIN':
                         break
                     # print('cal gets: ', user_num, user_salary)
@@ -127,11 +130,12 @@ class UserData(object):
                     user_income_tax = self.cal_income_tax(user_salary)
                     user_actual_income = user_salary - user_insure - user_income_tax
                     output_list = [user_num, user_salary, user_insure, user_income_tax, user_actual_income]
-                    with cal_lock:
-                        out_q.put(output_list)
-            with cal_lock:
-                out_q.put(['CAL', 'FIN'])
-                # is_cal_fin.value = 1
+                    # with cal_lock:
+                    out_q.put(output_list)
+            # with cal_lock:
+            out_q.put(['CAL', 'FIN'])
+            # is_cal_fin.value = 1
+
         except:
             with cal_lock:
                 is_error.value = 1
@@ -147,16 +151,18 @@ class UserData(object):
                     f.close()
                     return
                 if not out_q.empty():
-                    with cal_lock:
-                        output_data = out_q.get()
+                    # with cal_lock:
+                    output_data = out_q.get()
                     if output_data[0] == 'CAL' and output_data[1] == 'FIN':
                         f.close()
                         break
-                    user_info = '{0},{1},{2},{3},{4}\n'.format(str(output_data[0]),
-                                                               str(output_data[1]),
-                                                               format(output_data[2], ".2f"),
-                                                               format(output_data[3], ".2f"),
-                                                               format(output_data[4], ".2f"))
+                    user_info = '{0},{1},{2},{3},{4},{5}\n'.format(str(output_data[0]),
+                                                                   str(output_data[1]),
+                                                                   format(output_data[2], ".2f"),
+                                                                   format(output_data[3], ".2f"),
+                                                                   format(output_data[4], ".2f"),
+                                                                   datetime.strftime(datetime.now(),
+                                                                                     '%Y-%m-%d %H:%M:%S'))
                     f.write(user_info)
         except:
             print('write error')
@@ -168,30 +174,40 @@ class UserData(object):
 
 def main(argv):
     if len(argv) < 7:
-        print('Parameter Error')
-        exit(0)
+        p_error()
     else:
         # ./calculator.py -c /home/shiyanlou/test.cfg -d /home/shiyanlou/user.csv -o /tmp/gongzi.csv
-
-        arg_list = argv[1:]
+        try:
+            opts, args = getopt.getopt(argv[1:], 'C:c:d:o:', [])
+        except getopt.GetoptError as e:
+            p_error()
 
         cfg_file = None
+        cfg_city = 'DEFAULT'
         user_file = None
         output_file = None
 
-        for i in range(len(arg_list)):
-            if arg_list[i] == '-c':
-                cfg_file = arg_list[i + 1]
-            elif arg_list[i] == '-d':
-                user_file = arg_list[i + 1]
-            elif arg_list[i] == '-o':
-                output_file = arg_list[i + 1]
+        for o, v in opts:
+            if o == '-c':
+                cfg_file = v
+            elif o == '-C':
+                cfg_city = v
+            elif o == '-d':
+                user_file = v
+            elif o == '-o':
+                output_file = v
+        # print(cfg_file, user_file, output_file)
+        # print(cfg_city)
 
         if cfg_file is None or user_file is None or output_file is None:
-            print('Parameter Error')
-            exit(0)
+            p_error()
+        con_parser = configparser.ConfigParser()
+        try:
+            con_parser.read(cfg_file)
+        except:
+            p_error()
 
-        conf = Config(cfg_file)
+        conf = Config(con_parser[cfg_city.upper()])
         users = UserData(conf, user_file, output_file)
 
         # Multiprocessing
@@ -220,8 +236,12 @@ def main(argv):
         p_write.join()
 
         if is_error.value == 1:
-            print('Parameter Error')
-            exit(1)
+            p_error()
+
+
+def p_error():
+    print('Parameter Error')
+    exit(1)
 
 
 if __name__ == '__main__':
