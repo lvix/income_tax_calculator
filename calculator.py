@@ -70,10 +70,10 @@ class UserData(object):
         self.config = config
         self.data_file = data_file
         self.dump_file = dump_file
-        self.is_read_fin = Value('i', 0)
-        self.is_cal_fin = Value('i', 0)
-        self.read_fin_lock = Lock()
-        self.cal_fin_lock = Lock()
+        # self.is_read_fin = Value('i', 0)
+        # self.is_cal_fin = Value('i', 0)
+        # self.read_fin_lock = Lock()
+        # self.cal_fin_lock = Lock()
 
     @staticmethod
     def __error():
@@ -110,9 +110,10 @@ class UserData(object):
                     line = l.split(',')
                     # with err_lock:
                     user_q.put([int(line[0]), int(line[1])])
-            with self.read_fin_lock:
-                self.is_read_fin.value = 1
-                # print('read completed')
+            # with self.read_fin_lock:
+            #     self.is_read_fin.value = 1
+            # print('read completed')
+            user_q.put(['READ', 'FIN'])
 
         except:
             with err_lock:
@@ -127,23 +128,25 @@ class UserData(object):
                 if is_error.value == 1:
                     return
 
-                if user_q.empty():
-                    # with self.read_fin_lock:
-                    if self.is_read_fin.value == 1:
+                if not user_q.empty():
+                    user_num, user_salary = user_q.get()
+                    # print('cal:{} got {} {} '.format(os.getpid(), user_num, user_salary))
+                    if user_num == 'READ' and user_salary == 'FIN':
+                        user_q.put(['READ', 'FIN'])
+                        # print('cal:{} quit'.format(os.getpid()))
                         break
-                else:
-                    user_num, user_salary = user_q.get(timeout=1)
-                    if user_num and user_salary:
+                    else:
                         user_insure = self.config.cal_insure_amount(user_salary)
                         user_income_tax = self.cal_income_tax(user_salary)
                         user_actual_income = user_salary - user_insure - user_income_tax
                         output_list = [user_num, user_salary, user_insure, user_income_tax, user_actual_income]
 
                         out_q.put(output_list)
+                        # print('cal:{} put {}'.format(os.getpid(), output_list))
 
-            with self.cal_fin_lock:
-                self.is_cal_fin.value += 1
-
+            # with self.cal_fin_lock:
+            #     self.is_cal_fin.value += 1
+            out_q.put(['CAL', 'FIN'])
         except:
             with err_lock:
                 is_error.value = 1
@@ -153,27 +156,32 @@ class UserData(object):
         # print('write:{}'.format(os.getpid()))
         try:
             f = open(self.dump_file, 'w')
+            fin_flags_recv = 0
             while 1:
                 # with err_lock:
                 if is_error.value == 1:
+                    f.close()
                     return
 
-                if out_q.empty():
-                    with self.cal_fin_lock:
-                        if self.is_cal_fin.value >= cal_procs:
-                            break
-                else:
+                if not out_q.empty():
                     output_data = out_q.get()
-                    user_info = '{0},{1},{2},{3},{4},{5}\n'.format(str(output_data[0]),
-                                                                   str(output_data[1]),
-                                                                   format(output_data[2], ".2f"),
-                                                                   format(output_data[3], ".2f"),
-                                                                   format(output_data[4], ".2f"),
-                                                                   datetime.strftime(datetime.now(),
-                                                                                     '%Y-%m-%d %H:%M:%S'))
-                    f.write(user_info)
+                    # print('write:{} got {}'.format(os.getpid(), output_data))
+                    if output_data[0] == 'CAL' and output_data[1] == 'FIN':
+                        fin_flags_recv += 1
+                        if fin_flags_recv >= cal_procs:
+                            f.close()
+                            return
+                    else:
+                        user_info = '{0},{1},{2},{3},{4},{5}\n'.format(str(output_data[0]),
+                                                                       str(output_data[1]),
+                                                                       format(output_data[2], ".2f"),
+                                                                       format(output_data[3], ".2f"),
+                                                                       format(output_data[4], ".2f"),
+                                                                       datetime.strftime(datetime.now(),
+                                                                                         '%Y-%m-%d %H:%M:%S'))
+                        f.write(user_info)
         except:
-            print('write error')
+            # print('write error')
             f.close()
             with err_lock:
                 is_error.value = 1
@@ -247,7 +255,7 @@ def main(argv):
         for p in p_cals:
             p.join()
         time_stop = datetime.now()
-        print('elapsed time: {:2f} seconds'.format((time_stop - time_start).total_seconds()))
+        # print('elapsed time: {:2f} seconds'.format((time_stop - time_start).total_seconds()))
         p_write.join()
 
         if is_error.value == 1:
