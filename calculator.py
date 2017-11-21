@@ -132,23 +132,24 @@ class UserData(object):
                     if self.is_read_fin.value == 1:
                         break
                 else:
-                    user_num, user_salary = user_q.get()
-                    user_insure = self.config.cal_insure_amount(user_salary)
-                    user_income_tax = self.cal_income_tax(user_salary)
-                    user_actual_income = user_salary - user_insure - user_income_tax
-                    output_list = [user_num, user_salary, user_insure, user_income_tax, user_actual_income]
+                    user_num, user_salary = user_q.get(timeout=1)
+                    if user_num and user_salary:
+                        user_insure = self.config.cal_insure_amount(user_salary)
+                        user_income_tax = self.cal_income_tax(user_salary)
+                        user_actual_income = user_salary - user_insure - user_income_tax
+                        output_list = [user_num, user_salary, user_insure, user_income_tax, user_actual_income]
 
-                    out_q.put(output_list)
+                        out_q.put(output_list)
 
             with self.cal_fin_lock:
-                self.is_cal_fin.value = 1
+                self.is_cal_fin.value += 1
 
         except:
             with err_lock:
                 is_error.value = 1
             return
 
-    def write_data(self, is_error, err_lock, out_q):
+    def write_data(self, is_error, err_lock, out_q, cal_procs):
         # print('write:{}'.format(os.getpid()))
         try:
             f = open(self.dump_file, 'w')
@@ -159,7 +160,7 @@ class UserData(object):
 
                 if out_q.empty():
                     with self.cal_fin_lock:
-                        if self.is_cal_fin.value == 1:
+                        if self.is_cal_fin.value >= cal_procs:
                             break
                 else:
                     output_data = out_q.get()
@@ -230,9 +231,11 @@ def main(argv):
         # Lock
         err_lock = Lock()
 
+        cal_procs = 3
+
         p_read = Process(target=users.read_data, args=(is_error, err_lock, user_q,))
-        p_cals = [Process(target=users.cal_data, args=(is_error, err_lock, user_q, out_q,)) for x in range(3)]
-        p_write = Process(target=users.write_data, args=(is_error, err_lock, out_q,))
+        p_cals = [Process(target=users.cal_data, args=(is_error, err_lock, user_q, out_q,)) for x in range(cal_procs)]
+        p_write = Process(target=users.write_data, args=(is_error, err_lock, out_q, cal_procs, ))
 
         time_start = datetime.now()
         p_read.start()
@@ -244,7 +247,7 @@ def main(argv):
         for p in p_cals:
             p.join()
         time_stop = datetime.now()
-        # print('elapsed time: {:2f} seconds'.format((time_stop - time_start).total_seconds()))
+        print('elapsed time: {:2f} seconds'.format((time_stop - time_start).total_seconds()))
         p_write.join()
 
         if is_error.value == 1:
